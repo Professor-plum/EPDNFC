@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+<script type="module">
+var canvas;
+var ctx;
+var sourceImage;
+var ewidth = 176;
+var eheight = 264
+
+import * as Magick from 'https://knicknic.github.io/wasm-imagemagick/magickApi.js';
+
+function getCanvasBlob(can) {
+  return new Promise(function(resolve, reject) {
+    can.toBlob(function(blob) {
+      resolve(blob)
+    },"image/png",1)
+  })
+}
+
+
+function setFrame(ctx1, layer) {
+	var imgdata = ctx1.getImageData(0, 0, ewidth, eheight);
+	var pixels = imgdata.data;
+
+	for(var i = 0, l = pixels.length; i < l; i+=4) {
+		var v = pixels[i];
+		if (layer == 0) {
+			if (v > 64 && v<128)
+				v = 255;
+			else if (v > 197)
+				v =255;
+			else
+				v = 0;
+		}
+		else {
+			if (v >128)
+				v = 255;
+			else
+				v = 0 ;
+		}
+		pixels[i] = v
+	    pixels[i+1] = v;
+	    pixels[i+2] = v;
+	    pixels[i+3] = v;
+	}
+
+	ctx1.putImageData(imgdata, 0, 0)
+}
+
+async function MakeTiff(i) {
+
+  var canvas1 = document.createElement('canvas');
+  var ctx1 = canvas1.getContext('2d');
+  canvas1.width = canvas.width;
+  canvas1.height = canvas.height;
+  ctx1.drawImage(canvas, 0, 0);
+
+  setFrame(ctx1, i);
+
+  const blob = await getCanvasBlob(canvas1);
+  let sourceBytes = new Uint8Array(await blob.arrayBuffer());
+  
+  let processedFiles = await Magick.Call([{ 'name': 'srcFile.png', 'content': sourceBytes }], ["convert", "srcFile.png", "-compress", "group4", "list.tif"]);
+
+  return processedFiles;
+};
+
+window.onload = function() {
+  canvas = document.getElementById('canvas');
+  canvas.width = ewidth;
+  canvas.height = eheight;
+
+  ctx = canvas.getContext('2d');
+  ctx.font = "18px Arial";
+  ctx.fillText("Drop image here", 20, 100);
+
+  sourceImage = new Image();
+  sourceImage.id = "pic";
+  sourceImage.src = canvas.toDataURL();
+
+  canvas.addEventListener("drop", dropHandler, false);
+  canvas.addEventListener("dragover", dragHandler, false);
+  document.getElementById("brightness").addEventListener("input", redrawCanvas, false);
+  document.getElementById("contrast").addEventListener("input", redrawCanvas, false);
+  //document.getElementById("rawbtn").addEventListener("click", downloadRawData, false);
+  document.getElementById("cbtn").addEventListener("click", downloadCArray, false);
+  document.getElementById("tiffbtn").addEventListener("click", downloadTiff, false);
+  document.getElementById("nfcbtn").addEventListener("click", sendViaNFC, false);
+  document.getElementById("pngbtn").addEventListener("click", downloadCompressed, false);
+}
+
+function setColorDepth(depth) {
+	var imgdata = ctx.getImageData(0, 0, ewidth, eheight);
+	var pixels = imgdata.data;
+	var factor = 255/(depth-1);
+	function reduce(val) {
+    	return Math.round(val/factor)*factor;
+	}
+
+	var vals = new Set();
+	for(var i = 0, l = pixels.length; i < l; i+=4) {
+		vals.add(reduce(pixels[i]));
+	    pixels[i] = reduce(pixels[i]);
+	    pixels[i+1] = reduce(pixels[i+1]);
+	    pixels[i+2] = reduce(pixels[i+2]);
+	}
+
+	ctx.putImageData(imgdata, 0, 0)
+}
+
+function redrawCanvas() {
+	var image = sourceImage;
+	var wscale = image.width / ewidth;
+	var hscale = image.height / eheight;
+	var ix=0, iy=0, iw=image.width, ih=image.height;
+	if (wscale < hscale) {
+		ix = 0;
+		iw = image.width;
+		ih = eheight * wscale;
+		iy = (image.height - ih)/2;
+	}
+	else if (wscale > hscale) {
+		iy = 0;
+		ih = image.height;
+		iw = ewidth * hscale;
+		ix = (image.width - iw)/2;
+	}
+	var brightness = document.getElementById('brightness').value;
+	var contrast = document.getElementById('contrast').value;
+    ctx.filter = 'grayscale(1) brightness(' + brightness + '%) contrast(' + contrast + '%)';
+    ctx.drawImage(image, ix, iy, iw, ih, 0, 0, ewidth, eheight);
+    setColorDepth(4);
+}
+
+function dragHandler(ev) {
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = 'copy';
+}
+
+function dropHandler(ev) {
+  ev.preventDefault();
+
+  var reader = new FileReader();
+  reader.readAsDataURL(ev.dataTransfer.files[0]);
+  reader.onload = () => {
+  	const image = new Image();
+    image.src = reader.result;
+    image.onload = () => {
+    	sourceImage = image;
+    	redrawCanvas();
+      }
+  };
+}
+
+function downloadURL(data, fileName) {
+  var a;
+  a = document.createElement('a');
+  a.href = data;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.style = 'display: none';
+  a.click();
+  a.remove();
+};
+
+function getRawBytes() {
+	var imgdata = ctx.getImageData(0, 0, ewidth, eheight);
+	var pixels = imgdata.data;
+
+	const rawData = new Uint8Array(pixels.length/32);
+
+	for(var i = 0, l = pixels.length; i < l; i+=32) {
+		var b = 0;
+		for (var j=0; j<8; ++j) {
+			var p = pixels[i+j*4];
+			if (p > 128)
+				b |= (1 << (7-j));
+		}
+		rawData[i/32] = b;
+	}
+	return rawData;
+}
+
+
+function downloadRawData() {
+	var rawData = getRawBytes();
+	var blob, url;
+  	blob = new Blob([rawData], { type: 'application/octet-stream'});
+  	url = window.URL.createObjectURL(blob);
+  	downloadURL(url, 'image.bin');
+  	setTimeout(function() {
+    	return window.URL.revokeObjectURL(url);
+  	}, 1000);
+}
+
+
+function downloadPng() {
+	var dataURL = canvas.toDataURL("image/png");
+	downloadURL(dataURL);
+  	setTimeout(function() {
+    	return window.URL.revokeObjectURL(dataURL);
+  	}, 1000);
+}
+
+function downloadCompressed() {
+	var imgdata = ctx.getImageData(0, 0, ewidth, eheight);
+	var pixels = imgdata.data;
+
+	const rawData = [];
+
+	var last = 0;
+	var count = 0;
+	for(var i = 0, l = pixels.length; i < l; i+=4) {
+		var p = Math.floor(pixels[i]/64);
+		if ((last != p) || (count == 63)) {
+			if (count > 0) {
+				var b = (last << 6) + count;
+				rawData.push(b);
+			}
+			last = p;
+			count = 1;
+		}
+		else {
+			count++;
+		}
+	}
+	console.log("comp length =", rawData.length);
+	return rawData;
+}
+
+function downloadCArray() {
+	for (var i=0; i<2; ++i) {
+		MakeTiff(i).then( (tiff) => {
+			tiff[0].blob.arrayBuffer().then((buf) => {
+				var rawData = new Uint8Array(buf);
+				var cstring = "const unsigned char image[] = {\n";
+				for (var i=0; i < rawData.length; ++i) {
+					cstring += "0x" + rawData[i].toString(16).padStart(2, '0') + ", ";
+					if ((i%16) == 15)
+						cstring += "\n";
+				}
+				cstring += "\n};"
+
+				var blob, url;
+				blob = new Blob([cstring], { type: 'text/plain'});
+				url = window.URL.createObjectURL(blob);
+			  	downloadURL(url, 'image'+(i+1)+'.c');
+			  	setTimeout(function() {
+			    	return window.URL.revokeObjectURL(url);
+			  	}, 1000);
+			});
+		});	
+	}
+}
+
+function downloadTiff() {
+	for (var i=0; i<2; ++i) {
+		MakeTiff(i).then( (tiff) => {
+			var blob, url;
+			blob = new Blob([tiff[0].blob], { type: 'image/tiff'});
+		  	url = window.URL.createObjectURL(blob);
+		  	downloadURL(url, 'image'+(i+1)+'.tiff');
+		  	setTimeout(function() {
+		    	return window.URL.revokeObjectURL(url);
+		  	}, 1000);
+		});	
+	}
+}
+
+function sendViaNFC() {
+	MakeTiff().then( (tiff) => {
+		try {
+			const ndef = new NDEFReader();
+			ndef.write([tiff[0].blob], type="image/tiff");
+			console.log("Message Written!")
+		}
+		catch (error) {
+			console.log("NFC error: " + error)
+		}
+	});	
+	
+}
+
+</script>
+</head>
+<body>
+<div id="canvas-div" class="body">
+    <canvas id="canvas"></canvas>
+    <div>
+	    <label for="brightness">brightness:</label>
+	    <input id="brightness" class="slider-width" type="range" min="0" max="200" value="100">
+	    <label for="contrast">contrast:</label>
+	    <input id="contrast" class="slider-width" type="range" min="0" max="200" value="100">
+	    <button id="cbtn">Download C</button>
+	    <button id="tiffbtn">Download Tiff</button>
+	    <button id="nfcbtn">Send to Badge</button>
+	    <button id="pngbtn">Download png</button>
+    <div>
+</div>
+</body>
+</html>
